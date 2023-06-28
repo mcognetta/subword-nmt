@@ -79,6 +79,10 @@ def get_vocabulary(fobj, is_dict=False, num_workers=1):
     """Read text and return dictionary that encodes vocabulary
     """
     vocab = Counter()
+
+    # the set of all characters seen in the corpus (in both c and c@@ form)
+    character_vocab = set()
+
     if is_dict:
         for i, line in enumerate(fobj):
             try:
@@ -87,6 +91,12 @@ def get_vocabulary(fobj, is_dict=False, num_workers=1):
                 print('Failed reading vocabulary file at line {0}: {1}'.format(i, line))
                 sys.exit(1)
             vocab[word] += int(count)
+
+            # add each character in every word to the character set
+            for c in word:
+                character_vocab.add(c)
+                character_vocab.add(c + "@@")
+
     elif num_workers == 1 or fobj.name == '<stdin>':
         if num_workers > 1:
             warnings.warn("In parallel mode, the input cannot be STDIN. Using 1 processor instead.")
@@ -94,6 +104,12 @@ def get_vocabulary(fobj, is_dict=False, num_workers=1):
             for word in line.strip('\r\n ').split(' '):
                 if word:
                     vocab[word] += 1
+
+                    # add each character in every word to the character set
+                    for c in word:
+                        character_vocab.add(c)
+                        character_vocab.add(c + "@@")
+
     elif num_workers > 1:
 
         if sys.version_info < (3, 0):
@@ -129,15 +145,19 @@ def get_vocabulary(fobj, is_dict=False, num_workers=1):
         import pickle
         for i in range(num_workers):
             with open(vocab_files[i].name, 'rb') as f:
-                vocab += pickle.load(f)
+                data = pickle.load(f)
+                vocab += data['vocab']
+                character_vocab = character_vocab | data['character_vocab']
+
             os.remove(vocab_files[i].name)
     else:
         raise ValueError('`num_workers` is expected to be a positive number, but got {}.'.format(num_workers))
-    return vocab
+    return vocab, character_vocab
 
 def _get_vocabulary(infile, outfile, begin, end):
     import pickle
     vocab = Counter()
+    character_vocab = set()
     with open(infile, encoding="utf8") as f:
         f.seek(begin)
         line = f.readline()
@@ -148,10 +168,15 @@ def _get_vocabulary(infile, outfile, begin, end):
                 break
             for word in line.strip('\r\n ').split(' '):
                 if word:
+
+                    # add each character in every word to the character set
+                    for c in word:
+                        character_vocab.add(c)
+                        character_vocab.add(c + "@@")
                     vocab[word] += 1
             line = f.readline()
     with open(outfile, 'wb') as f:
-        pickle.dump(vocab, f)
+        pickle.dump({'vocab': vocab, 'character_vocab': character_vocab}, f)
 
 def update_pair_statistics(pair, changed, stats, indices):
     """Minimally update the indices and frequency of symbol pairs
@@ -279,7 +304,7 @@ def learn_bpe(infile, outfile, num_symbols, min_frequency=2, verbose=False, is_d
     # version numbering allows bckward compatibility
     outfile.write('#version: 0.2\n')
 
-    vocab = get_vocabulary(infile, is_dict, num_workers)
+    vocab, _ = get_vocabulary(infile, is_dict, num_workers)
     vocab = dict([(tuple(x[:-1])+(x[-1]+'</w>',) ,y) for (x,y) in vocab.items()])
     sorted_vocab = sorted(vocab.items(), key=lambda x: x[1], reverse=True)
 
